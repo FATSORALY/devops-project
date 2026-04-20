@@ -1,0 +1,57 @@
+# Jenkins
+jenkins/jenkins_home/
+*.war
+*.hpi
+*.jpi
+
+# Docker
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# AWS
+.aws/
+credentials
+config
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+
+# Temp files
+tmp/
+temp/
+*.tmp

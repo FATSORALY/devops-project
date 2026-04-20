@@ -1,0 +1,313 @@
+# =============================================================================
+# jenkins-k8s.yaml
+# Déploiement complet Jenkins sur Kubernetes / EKS
+# kubectl apply -f k8s/jenkins/jenkins-k8s.yaml
+# =============================================================================
+
+---
+# ── 1. Namespace ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    app: jenkins
+
+---
+# ── 2. ServiceAccount ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: jenkins
+
+---
+# ── 3. ClusterRole — Jenkins doit créer des pods agents dans tous les NS ──────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jenkins-role
+rules:
+  # Pods agents Jenkins
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secrets / ConfigMaps pour credentials
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deployments (pour que Jenkins puisse kubectl apply)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Services, Ingress
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespaces (helm crée des namespaces)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create"]
+
+---
+# ── 4. ClusterRoleBinding ─────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jenkins-role
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+
+---
+# ── 5. PersistentVolumeClaim — Stockage Jenkins home ─────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-pvc
+  namespace: jenkins
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp2          # EKS AWS → gp2 / gp3
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# ── 6. ConfigMap — Configuration JCasC (Jenkins Configuration as Code) ────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc
+  namespace: jenkins
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "Jenkins DevOps — eu-west-3"
+      numExecutors: 0              # Pas d'exécuteurs sur le master
+      mode: EXCLUSIVE
+      clouds:
+        - kubernetes:
+            name: "kubernetes"
+            serverUrl: ""          # Autodétecté depuis le pod
+            namespace: "jenkins"
+            jenkinsUrl: "http://jenkins-service.jenkins.svc.cluster.local:8080"
+            jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+            containerCapStr: "10"
+            podTemplates:
+              - name: "agent"
+                namespace: "jenkins"
+                label: "k8s-agent"
+                serviceAccount: "jenkins"
+                containers:
+                  - name: "jnlp"
+                    image: "jenkins/inbound-agent:latest"
+                    resourceRequestCpu: "100m"
+                    resourceRequestMemory: "256Mi"
+                    resourceLimitCpu: "500m"
+                    resourceLimitMemory: "512Mi"
+                  - name: "docker"
+                    image: "docker:24-dind"
+                    privileged: true
+                    resourceRequestCpu: "200m"
+                    resourceRequestMemory: "256Mi"
+                  - name: "tools"
+                    image: "alpine/k8s:1.29.2"
+                    command: "sleep"
+                    args: "99d"
+                    resourceRequestCpu: "100m"
+                    resourceRequestMemory: "128Mi"
+                volumes:
+                  - hostPathVolume:
+                      hostPath: "/var/run/docker.sock"
+                      mountPath: "/var/run/docker.sock"
+    security:
+      globalJobDslSecurityConfiguration:
+        useScriptSecurity: false
+    unclassified:
+      location:
+        url: "http://jenkins-service.jenkins.svc.cluster.local:8080/"
+
+---
+# ── 7. Deployment Jenkins ─────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: jenkins
+  labels:
+    app: jenkins
+spec:
+  replicas: 1                    # Jenkins master = toujours 1 replica
+  selector:
+    matchLabels:
+      app: jenkins
+  strategy:
+    type: Recreate               # Recreate car PVC ReadWriteOnce
+  template:
+    metadata:
+      labels:
+        app: jenkins
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/prometheus"
+    spec:
+      serviceAccountName: jenkins
+      securityContext:
+        fsGroup: 1000            # Groupe jenkins dans le container
+        runAsUser: 1000
+
+      initContainers:
+        # Corriger les permissions du volume au démarrage
+        - name: fix-permissions
+          image: busybox:latest
+          command: ["sh", "-c", "chown -R 1000:1000 /var/jenkins_home"]
+          volumeMounts:
+            - name: jenkins-data
+              mountPath: /var/jenkins_home
+          securityContext:
+            runAsUser: 0
+
+      containers:
+        - name: jenkins
+          # Utiliser l'image custom buildée depuis ./jenkins/Dockerfile
+          # Remplacer par votre URL ECR après docker build + push :
+          # <ECR_URL>/devops-project/jenkins:latest
+          image: jenkins/jenkins:2.462-jdk17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: agent
+              containerPort: 50000    # Port JNLP pour les agents K8s
+          env:
+            - name: JAVA_OPTS
+              value: >-
+                -Djenkins.install.runSetupWizard=false
+                -Dhudson.model.DirectoryBrowserSupport.CSP=
+                -Xmx512m
+                -Xms256m
+            - name: CASC_JENKINS_CONFIG
+              value: /var/jenkins_casc/jenkins.yaml
+          volumeMounts:
+            - name: jenkins-data
+              mountPath: /var/jenkins_home
+            - name: jenkins-casc
+              mountPath: /var/jenkins_casc
+              readOnly: true
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            failureThreshold: 5
+
+      volumes:
+        - name: jenkins-data
+          persistentVolumeClaim:
+            claimName: jenkins-pvc
+        - name: jenkins-casc
+          configMap:
+            name: jenkins-casc
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+
+---
+# ── 8. Service HTTP (UI Jenkins) ─────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-service
+  namespace: jenkins
+  labels:
+    app: jenkins
+spec:
+  selector:
+    app: jenkins
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# ── 9. Service Agent JNLP (agents K8s se connectent ici) ─────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-agent
+  namespace: jenkins
+  labels:
+    app: jenkins
+spec:
+  selector:
+    app: jenkins
+  ports:
+    - name: agent
+      port: 50000
+      targetPort: 50000
+  type: ClusterIP
+
+---
+# ── 10. Ingress — expose Jenkins via AWS ALB ──────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jenkins-ingress
+  namespace: jenkins
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /login
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/success-codes: "200,302"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jenkins-service
+                port:
+                  number: 8080
