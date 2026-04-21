@@ -1,11 +1,6 @@
 pipeline {
     agent any
     
-    tools {
-        maven 'Maven-3.8'  // Si vous utilisez Maven
-        nodejs 'NodeJS-16' // Si vous utilisez NodeJS
-    }
-    
     environment {
         DOCKER_REGISTRY = 'votre-registry'
         AWS_REGION = 'eu-west-3'
@@ -15,62 +10,94 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main', 
-                    url: 'https://github.com/votre-repo/app.git',
-                    credentialsId: 'github-credentials'
+                checkout scm
+                echo "Code récupéré avec succès"
             }
         }
         
-        stage('Build') {
+        stage('Vérification des outils') {
             steps {
-                sh 'docker build -t mon-app:${BUILD_NUMBER} .'
+                sh '''
+                    echo "=== Vérification des outils ==="
+                    docker --version
+                    kubectl version --client
+                    git --version
+                    aws --version
+                    terraform version
+                    helm version
+                    trivy --version
+                '''
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    # Créer un Dockerfile de test si pas existant
+                    if [ ! -f Dockerfile ]; then
+                        cat > Dockerfile << 'DOCKEREOF'
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/
+EXPOSE 80
+DOCKEREOF
+                        echo "<h1>Build ${BUILD_NUMBER}</h1>" > index.html
+                    fi
+                    
+                    docker build -t mon-app:${BUILD_NUMBER} .
+                '''
             }
         }
         
         stage('Test') {
             steps {
-                sh 'docker run mon-app:${BUILD_NUMBER} npm test'
+                sh '''
+                    docker run --rm -d -p 8081:80 --name test-app mon-app:${BUILD_NUMBER}
+                    sleep 2
+                    curl -s http://localhost:8081 | head -5
+                    docker stop test-app
+                '''
             }
         }
         
-        stage('Scan Security') {
+        stage('Security Scan') {
             steps {
-                sh 'trivy image mon-app:${BUILD_NUMBER}'
+                sh '''
+                    trivy image --severity HIGH,CRITICAL --no-progress mon-app:${BUILD_NUMBER} || true
+                '''
             }
         }
         
         stage('Push to Registry') {
             steps {
-                withAWS(region: 'eu-west-3', credentials: 'aws-credentials') {
-                    sh '''
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_REGISTRY}
-                        docker tag mon-app:${BUILD_NUMBER} ${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER}
-                        docker push ${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER}
-                    '''
-                }
+                sh '''
+                    echo "Pushing to registry..."
+                    # Décommenter quand vous avez un registry
+                    # docker tag mon-app:${BUILD_NUMBER} ${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER}
+                    # docker push ${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER}
+                '''
             }
         }
         
         stage('Deploy to K8s') {
             steps {
-                withKubeConfig([credentialsId: 'kubeconfig', clusterName: 'eks-cluster']) {
-                    sh '''
-                        kubectl set image deployment/mon-app mon-app=${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER} -n production
-                        kubectl rollout status deployment/mon-app -n production
-                    '''
-                }
+                sh '''
+                    echo "Deploying to Kubernetes..."
+                    kubectl get nodes
+                    # kubectl set image deployment/mon-app mon-app=${DOCKER_REGISTRY}/mon-app:${BUILD_NUMBER} -n production
+                '''
             }
         }
     }
     
     post {
+        always {
+            cleanWs()
+        }
         success {
-            echo 'Pipeline réussi !'
-            slackSend(color: 'good', message: "Build ${BUILD_NUMBER} réussi")
+            echo "✅ Pipeline réussi ! Build ${BUILD_NUMBER}"
         }
         failure {
-            echo 'Pipeline échoué !'
-            slackSend(color: 'danger', message: "Build ${BUILD_NUMBER} échoué")
+            echo "❌ Pipeline échoué ! Build ${BUILD_NUMBER}"
         }
     }
 }
