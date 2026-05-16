@@ -1,0 +1,11 @@
+# Terraform providers et state
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.tar.gz
+*.zip
+terraform.tfstate
+terraform.tfstate.backup
+tfplan
+.terraform.lock.hcl

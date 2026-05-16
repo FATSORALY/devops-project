@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-app
+  namespace: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flask-app
+  template:
+    metadata:
+      labels:
+        app: flask-app
+    spec:
+      containers:
+      - name: flask-app
+        image: 240676008744.dkr.ecr.eu-west-3.amazonaws.com/devops-free-tier-app:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: DB_HOST
+          value: "devops-free-tier-db.ctm440gqkvel.eu-west-3.rds.amazonaws.com"
+        - name: DB_NAME
+          value: "appdb"
+        - name: DB_USER
+          value: "appuser"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: DB_PASSWORD
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"

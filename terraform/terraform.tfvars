@@ -1,0 +1,12 @@
+aws_region         = "eu-west-3"
+project_name       = "integreall"
+environment        = "dev"
+node_instance_type = "t3.medium"
+node_desired_count = 1
+node_min_count     = 1
+node_max_count     = 2
+db_instance_class  = "db.t3.micro"
+db_name            = "appdb"
+db_username        = "appuser"
+db_password        = "CHANGE_ME_password_123!"
+ecr_repo_name      = "demo-app"

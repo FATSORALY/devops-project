@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mon-app-monitor
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: mon-app        # doit matcher le label de ton service
+  namespaceSelector:
+    matchNames:
+      - app               # ton namespace
+  endpoints:
+  - port: http            # nom du port dans ton service
+    path: /metrics        # endpoint des métriques
+    interval: 30s         # fréquence de scrape

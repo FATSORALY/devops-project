@@ -1,0 +1,18 @@
+prometheus:
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        cpu: 200m
+        memory: 800Mi
+
+grafana:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+  persistence:
+    enabled: true
+    size: 5Gi
